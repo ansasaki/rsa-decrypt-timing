@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use openssl::{
     encrypt::Decrypter,
     pkey::{Id, PKey, Private},
@@ -8,6 +8,7 @@ use openssl::{
 use std::{
     fs::File,
     io::{BufReader, Read, Write},
+    str,
     time::Instant,
 };
 
@@ -15,17 +16,21 @@ use std::{
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
+    /// Key file
+    #[arg(short = 'k', long)]
+    key: String,
+
     /// Input file
-    #[arg(short, long)]
+    #[arg(short = 'i', long)]
     input: String,
 
     /// Output file
-    #[arg(short, long)]
+    #[arg(short = 'o', long)]
     output: String,
 
-    /// Key file
-    #[arg(short, long)]
-    key: String,
+    /// Debug option to print the decrypted data to stdout
+    #[arg(short = 's', long, action=ArgAction::SetTrue)]
+    stdout: Option<bool>,
 }
 
 /// Open input and output files
@@ -44,6 +49,21 @@ fn get_decrypter(pkey: &PKey<Private>) -> Result<Decrypter> {
         .context("failed to set RSA decrypter padding")?;
 
     Ok(decrypter)
+}
+
+fn print_stdout(data: &Vec<u8>) {
+    let r = str::from_utf8(&data);
+
+    match r {
+        Ok(s) => {
+            print!("{s}\n");
+        }
+        Err(_) => {
+            for b in data {
+                print!("{b:02X?}");
+            }
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -69,26 +89,32 @@ fn main() -> Result<()> {
         .rsa()
         .context("Failed getting RSA key from PKey")?
         .size()
-        .try_into().context("Failed to convert module lenght to usize")?;
+        .try_into()
+        .context("Failed to convert module lenght to usize")?;
 
     println!("key length: {} bits ({} bytes)", len * 8, len);
 
     let decrypter = get_decrypter(&pkey)?;
 
     let mut in_buf = vec![0; len];
-    let mut _out_buf = vec![0; len];
+    let mut out_buf = vec![0; len];
 
     let mut i = 0;
 
     while reader.read_exact(&mut in_buf).is_ok() {
         i = i + 1;
         let start = Instant::now();
-        let res = decrypter
-            .decrypt(&in_buf, &mut _out_buf);
+        let res = decrypter.decrypt(&in_buf, &mut out_buf);
         let duration = start.elapsed();
 
         if res.is_err() {
             bail!("Failed to decrypt on iteration {i}");
+        }
+
+        if let Some(stdout) = args.stdout {
+            if stdout {
+                print_stdout(&out_buf);
+            }
         }
 
         write!(&mut output_file, "{}\n", duration.as_nanos())
